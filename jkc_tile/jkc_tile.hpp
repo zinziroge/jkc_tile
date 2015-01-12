@@ -31,6 +31,7 @@ void cv_JKC_Tile_3(
 
 void cv_JKC_Tile_4(
 	IplImage* src_img, IplImage* dst_img,
+	FILE* fp_dbg_out,
 	const int blk_width, const int blk_height,
 	const int BlockSize = 11,
 	const double ContThre = 3.0,

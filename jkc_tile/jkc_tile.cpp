@@ -3,8 +3,6 @@
 #include <math.h>
 #include "jkc_tile.hpp"
 
-
-
 void cv_JKC_Tile(
 	const IplImage* src_img, IplImage* dst_img, 
 	const double down_ratio, 
@@ -77,6 +75,7 @@ static void HSV2BGR(int h, int s, int v, CvScalar* rgb){
 	rgb->val[3] = 0;
 }
 
+/*
 void cv_JKC_Tile_2(
 	const IplImage* src_img, IplImage* dst_img, 
 	const int blk_width, const int blk_height,
@@ -298,9 +297,153 @@ void cv_JKC_Tile_3(
 	cvReleaseImage(&mask);
 	cvReleaseImage(&dot);
 }
+*/
 
-void JKC_Tile_4(
+void cv_JKC_Tile_addEdge(const IplImage *src_img, IplImage *dst_img, const int BlockSize, const int ContThre, const int MedianLevel) {
+	////////////////////////////////////////////////////////////////
+	//
+	// 輪郭画像の作成
+	//
+	////////////////////////////////////////////////////////////////
+
+	IplImage* contour_gray = cvCreateImage(cvGetSize(src_img), IPL_DEPTH_8U, 1);
+	IplImage* contour_color = cvCreateImage(cvGetSize(src_img), IPL_DEPTH_8U, 3);
+
+	// カラー⇒モノクロ変換
+	cvCvtColor(src_img, contour_gray, CV_BGR2GRAY);
+	// 適応的二値化
+	cvAdaptiveThreshold(contour_gray, contour_gray, 255,
+		CV_ADAPTIVE_THRESH_MEAN_C, CV_THRESH_BINARY, BlockSize, ContThre);
+	// ノイズ除去
+	cvSmooth(contour_gray, contour_gray, CV_MEDIAN, MedianLevel);
+	// モノクロ変換⇒カラー
+	cvCvtColor(contour_gray, contour_color, CV_GRAY2BGR);
+	// 解放
+	cvReleaseImage(&contour_gray);
+
+	////////////////////////////////////////////////////////////////
+	//
+	// 輪郭画像 ＋ 減色画像の作成
+	//
+	////////////////////////////////////////////////////////////////
+	cvAnd(dst_img, contour_color, dst_img);
+	//cvCopy(contour_color, dst_img, NULL);
+	
+	cvReleaseImage(&contour_color);
+	
+}
+
+void cv_JKC_Tile_addCannyEdge(IplImage* src_img, IplImage* dst_img, double lowThresh, double highThresh, int apertureSize)
+{
+	////////////////////////////////////////////////////////////////
+	//
+	// 輪郭画像の作成
+	//
+	////////////////////////////////////////////////////////////////
+
+	IplImage* contour_gray = cvCreateImage(cvGetSize(src_img), IPL_DEPTH_8U, 1);
+	IplImage* contour_color = cvCreateImage(cvGetSize(src_img), IPL_DEPTH_8U, 3);
+
+	// カラー⇒モノクロ変換
+	cvCvtColor(src_img, contour_gray, CV_BGR2GRAY);
+	// CannyEdge
+	cvCanny(contour_gray, contour_gray, lowThresh, highThresh, apertureSize);
+	//　反転
+	cvNot(contour_gray, contour_gray);
+	// ノイズ除去
+	//cvSmooth(contour_gray, contour_gray, CV_MEDIAN, MedianLevel);
+	// モノクロ変換⇒カラー
+	cvCvtColor(contour_gray, contour_color, CV_GRAY2BGR);
+	// 解放
+	cvReleaseImage(&contour_gray);
+
+	////////////////////////////////////////////////////////////////
+	//
+	// 輪郭画像 ＋ 減色画像の作成
+	//
+	////////////////////////////////////////////////////////////////
+	cvAnd(dst_img, contour_color, dst_img);
+	//cvCopy(contour_color, dst_img, NULL);
+
+	cvReleaseImage(&contour_color);
+}
+
+void cv_JKC_Tile_DecreseColor(
 	IplImage* src_img, IplImage* dst_img,
+	const int PyrLevel, 
+	double SegmentThre,
+	const int MedianLevel
+	) {
+	////////////////////////////////////////////////////////////////
+	//
+	// 減色画像の作成
+	//
+	////////////////////////////////////////////////////////////////
+
+	CvMemStorage *storage = cvCreateMemStorage(0);
+	CvSeq *comp = 0;
+	CvRect roi;
+
+	// 領域分割のためにROIをセットする
+	roi.x = roi.y = 0;
+	roi.width = src_img->width & -(1 << PyrLevel);
+	roi.height = src_img->height & -(1 << PyrLevel);
+	cvSetImageROI(src_img, roi);
+	cvSetImageROI(dst_img, roi);
+	// 画像ピラミッドを使った領域分割
+	cvPyrSegmentation(src_img, dst_img, storage, &comp, PyrLevel, 255.0, SegmentThre);
+	// ノイズ除去
+	cvSmooth(dst_img, dst_img, CV_MEDIAN, MedianLevel);
+	// 解放
+	cvReleaseMemStorage(&storage);
+	cvResetImageROI(src_img);
+	cvResetImageROI(dst_img);
+}
+
+// http://opencv.jp/opencv2-x-samples/k-means_clustering
+void cv_JKC_Tile_DecreaseColor_2(
+	IplImage* src_img, IplImage* dst_img, const int max_clusters
+	)
+{
+	int i, size;
+	CvMat *clusters, *points;
+	CvMat *count = cvCreateMat(max_clusters, 1, CV_32SC1);
+	CvMat *centers = cvCreateMat(max_clusters, 3, CV_32FC1);
+
+	size = src_img->width * src_img->height;
+	//dst_img = cvCloneImage(src_img);
+	clusters = cvCreateMat(size, 1, CV_32SC1);
+	points = cvCreateMat(size, 1, CV_32FC3);
+
+	// (2)reshape the image to be a 1 column matrix 
+	for (i = 0; i<size; i++) {
+		points->data.fl[i * 3 + 0] = (uchar)src_img->imageData[i * 3 + 0];
+		points->data.fl[i * 3 + 1] = (uchar)src_img->imageData[i * 3 + 1];
+		points->data.fl[i * 3 + 2] = (uchar)src_img->imageData[i * 3 + 2];
+	}
+
+	// (3)run k-means clustering algorithm to segment pixels in RGB color space
+	cvKMeans2(points, max_clusters, clusters,
+		cvTermCriteria(CV_TERMCRIT_EPS + CV_TERMCRIT_ITER, 10, 1.0),
+		1, 0, 0, centers, 0);
+
+	// (4)make a each centroid represent all pixels in the cluster
+	for (i = 0; i<size; i++) {
+		int idx = clusters->data.i[i];
+		dst_img->imageData[i * 3 + 0] = (char)centers->data.fl[idx * 3 + 0];
+		dst_img->imageData[i * 3 + 1] = (char)centers->data.fl[idx * 3 + 1];
+		dst_img->imageData[i * 3 + 2] = (char)centers->data.fl[idx * 3 + 2];
+	}
+
+	cvReleaseMat(&clusters);
+	cvReleaseMat(&points);
+	cvReleaseMat(&centers);
+	cvReleaseMat(&count);
+}
+
+void cv_JKC_Tile_4(
+	IplImage* src_img, IplImage* dst_img,
+	FILE* fp_dbg_out,
 	const int blk_width, const int blk_height,
 	const int BlockSize,
 	const double ContThre,
@@ -332,40 +475,27 @@ void JKC_Tile_4(
 	int b, g, r;
 	CvScalar fst_bgr_col = cvScalar(0, 0, 0, 0), snd_bgr_col;
 	int radius;
-
-	////////////////////////////////////////////////////////////////
-	//
-	// 減色画像の作成
-	//
-	////////////////////////////////////////////////////////////////
-
-	CvMemStorage *storage = cvCreateMemStorage(0);
-	CvSeq *comp = 0;
 	CvRect roi;
+	float cnt;
+	float w;
 
-	// 領域分割のためにROIをセットする
-	roi.x = roi.y = 0;
-	roi.width = src_img->width & -(1 << PyrLevel);
-	roi.height = src_img->height & -(1 << PyrLevel);
-	cvSetImageROI(src_img, roi);
-	cvSetImageROI(dst_img, roi);
-	// 画像ピラミッドを使った領域分割
-	cvPyrSegmentation(src_img, dst_img, storage, &comp, PyrLevel, 255.0, SegmentThre);
-	// ノイズ除去
-	cvSmooth(dst_img, dst_img, CV_MEDIAN, MedianLevel);
-	// 解放
-	cvReleaseMemStorage(&storage);
-	cvResetImageROI(src_img);
-	cvResetImageROI(dst_img);
 	////////////////////////////////////////////////////////////////
+	cvCvtColor(src_img, src_img, CV_BGR2HSV);
 
+	////////////////////////////////////////////////////////////////
+	// 減色画像の作成
+	//cv_JKC_Tile_DecreseColor(src_img, dst_img, PyrLevel, SegmentThre, MedianLevel);
+	cv_JKC_Tile_DecreaseColor_2(src_img, dst_img, 8);
+
+	cvCvtColor(dst_img, dst_img, CV_HSV2BGR);
+
+	////////////////////////////////////////////////////////////////
+	// 
 	hist = cvCreateHist(3, hist_size, CV_HIST_ARRAY, ranges, 1);
-	//cvCvtColor(src_img, hsv, CV_BGR2HSV);
-	//cvCvtPixToPlane(hsv, h_plane, s_plane, v_plane, 0);
-	//cvCvtPixToPlane(src_img, b_plane, g_plane, r_plane, 0);
 	cvCvtPixToPlane(dst_img, b_plane, g_plane, r_plane, 0);
-	//cvCvtColor(dst_img, dst_img, CV_BGR2HSV);
 
+	fprintf(fp_dbg_out, "max_bin=%d\n", blk_width*blk_height);
+	fprintf(fp_dbg_out, "blk_x,blk_y,fst_bin_val,snd_bin_val\n");
 	for (blk_y = 0; blk_y < n_div_y; blk_y++) {
 		for (blk_x = 0; blk_x < n_div_x; blk_x++) {
 			roi.x = blk_width * blk_x;
@@ -373,76 +503,92 @@ void JKC_Tile_4(
 			roi.width = blk_width;
 			roi.height = blk_height;
 
+			// 該当ブロック領域のヒストを取得
 			//cvSetImageROI (dst_img, roi);
 			cvZero(mask);
 			cvRectangle(
 				mask,
-				cvPoint(roi.x, roi.y), cvPoint(roi.x + blk_width, roi.y + blk_height),
+				cvPoint(roi.x, roi.y), cvPoint(roi.x + blk_width - 1, roi.y + blk_height - 1),
 				cvScalarAll(255), CV_FILLED, 8, 0
 				);
 			cvCalcHist(planes, hist, 0, mask);
-			cvGetMinMaxHistValue(hist, 0, &fst_bin_val, 0, 0);
+			cvNormalizeHist(hist, 1.0);
+			//cvGetMinMaxHistValue(hist, 0, &fst_bin_val, 0, 0);
 
+			// 最大binとその次に大きいbinの取得
 			fst_bin_val = 0;
 			snd_bin_val = 0;
+			cnt = 0.0;
 			for (b = 0; b < b_bins; b++) {
 				for (g = 0; g < g_bins; g++) {
 					for (r = 0; r < r_bins; r++) {
 						float bin_val = cvQueryHistValue_3D(hist, b, g, r);
-						if (fst_bin_val < bin_val) {
-							snd_bin_val = fst_bin_val;
-							snd_bgr_col = fst_bgr_col;
-							fst_bin_val = bin_val;
-							fst_bgr_col = cvScalar(b * 4, g * 4, r * 4);
+						cnt += bin_val;
+						if (snd_bin_val < bin_val) {
+							if (fst_bin_val < bin_val) {
+								snd_bin_val = fst_bin_val;
+								snd_bgr_col = fst_bgr_col;
+								fst_bin_val = bin_val;
+								fst_bgr_col = cvScalar(b * 8, g * 8, r * 8); // 8 = 256/32
+							}
+							else {
+								snd_bin_val = bin_val;
+								snd_bgr_col = cvScalar(b * 8, g * 8, r * 8); // 8 = 256/32
+							}
 						}
 					}
 				}
 			}
 
-			cvRectangle(
-				dst_img,
-				cvPoint(roi.x, roi.y), cvPoint(roi.x + blk_width, roi.y + blk_height),
-				fst_bgr_col, CV_FILLED, 8, 0
-				);
-			// blk_widht*blk_height : radius^2*pi = fst_bin_val : snd_bin_val
-			radius = (int)sqrt(blk_width*blk_height * snd_bin_val / fst_bin_val / M_PI);
-			cvCircle(
-				dst_img,
-				cvPoint(roi.x + blk_width / 2, roi.y + blk_height / 2), radius,
-				snd_bgr_col, CV_FILLED, 8, 0
-				);
+			fprintf(fp_dbg_out, "%3d,%3d,%f,%1.4f,%1.4f,%1.4f,", 
+				blk_x, blk_y, fst_bin_val, snd_bin_val, fst_bin_val+snd_bin_val, cnt);
+			
+			if (fst_bin_val < 1.8) {
+				fprintf(fp_dbg_out, "0,");
+			} else if (	snd_bin_val / fst_bin_val > 0.25 ) { // 境界
+					fprintf(fp_dbg_out, "1,");
+			} else {
+				fprintf(fp_dbg_out, "2,");
+				cvRectangle(
+					dst_img,
+					cvPoint(roi.x, roi.y), cvPoint(roi.x + blk_width, roi.y + blk_height),
+					fst_bgr_col, CV_FILLED, 8, 0
+					);
+				// fst_bin_val : snd_bin_val = (blk_width - w) * (blk_height - h) : w*h
+				// blk_width=blk_height, w=hとすると
+				// (blk_width^2 -2*w*blk_width + w^2) * snd_bin_val = w^2*fst_bin_val
+				// (fst_bin_val-snd_bin_val)*w^2 + 2*snd_bin_val*blk_width*w - snd_bin_val*blk_width^2 = 0
+				// w = -2*snd_bin_val*blk_width +- sqrt(4*snd_bin_val^2*blk_width^2 + 4*(fst_bin_val-snd_bin_val)*snd_bin_val*blk_width^2)) / (2*(fst_bin_val-snd_bin_val))
+				w = (-2 * snd_bin_val * blk_width + sqrt(4 * snd_bin_val*snd_bin_val*blk_width*blk_width + 4 * (fst_bin_val - snd_bin_val)*snd_bin_val*blk_width*blk_width)) /
+					(2.0*(fst_bin_val - snd_bin_val));
+				cvRectangle(
+					dst_img,
+					cvPoint(roi.x + blk_width / 2 - w, roi.y + blk_height/2 - w), 
+					cvPoint(roi.x + blk_width / 2 + w, roi.y + blk_height/2 + w),
+					snd_bgr_col, CV_FILLED, 8, 0
+					);
+				// blk_widht*blk_height : radius^2*pi = fst_bin_val : snd_bin_val
+				/*
+				radius = (int)sqrt(blk_width*blk_height * snd_bin_val / fst_bin_val / M_PI);
+				cvRectangle(
+					dst_img,
+					cvPoint(roi.x + blk_width / 2, roi.y + blk_height / 2), radius,
+					snd_bgr_col, CV_FILLED, 8, 0
+					);
+				*/
+			}
+
+			fprintf(fp_dbg_out, "\n");
 		}
 	}
 
 	////////////////////////////////////////////////////////////////
-	//
-	// 輪郭画像の作成
-	//
-	////////////////////////////////////////////////////////////////
-
-	IplImage* contour_gray = cvCreateImage(cvGetSize(src_img), IPL_DEPTH_8U, 1);
-	IplImage* contour_color = cvCreateImage(cvGetSize(src_img), IPL_DEPTH_8U, 3);
-
-	// カラー⇒モノクロ変換
-	cvCvtColor(src_img, contour_gray, CV_BGR2GRAY);
-	// 適応的二値化
-	cvAdaptiveThreshold(contour_gray, contour_gray, 255,
-		CV_ADAPTIVE_THRESH_MEAN_C, CV_THRESH_BINARY, BlockSize, ContThre);
-	// ノイズ除去
-	cvSmooth(contour_gray, contour_gray, CV_MEDIAN, MedianLevel);
-	// モノクロ変換⇒カラー
-	cvCvtColor(contour_gray, contour_color, CV_GRAY2BGR);
-	// 解放
-	cvReleaseImage(&contour_gray);
+	// エッジ追加
+	//cv_JKC_Tile_addEdge(dst_img, dst_img, BlockSize, ContThre, MedianLevel);
+	cv_JKC_Tile_addCannyEdge(src_img, dst_img, 50, 200, 3);
 
 	////////////////////////////////////////////////////////////////
-	//
-	// 輪郭画像 ＋ 減色画像の作成
-	//
-	////////////////////////////////////////////////////////////////
-	cvAnd(dst_img, contour_color, dst_img);
-	//cvCopy(contour_color, dst_img, NULL);
-
+	// リリース
 	//cvCvtColor(dst_img, dst_img, CV_HSV2BGR);
 	cvReleaseImage(&b_plane);
 	cvReleaseImage(&g_plane);

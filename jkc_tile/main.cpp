@@ -59,13 +59,19 @@ void on_mouse(int event, int x, int y, int flags, void *param) {
 			cvShowImage("Proc", img2);
 		}
 		sw_img = (sw_img + 1) % 2;
-		printf("(%d,%d) %s", x, y, "LBUTTON_DOWN");
+		printf("(%d,%d) %s\n", x, y, "LBUTTON_DOWN");
 		break;
 	}
 }
 int main(int argc, char** argv) {
 	char c;
+	FILE *fp_dbg_out;
 
+	fp_dbg_out = fopen("dbg_out.txt", "w");
+	if (fp_dbg_out == NULL) {
+		fprintf(stderr, "Error: Can't open %s.\n", "dbg_out.txt");
+		exit(1);
+	}
 	img1 = cvLoadImage(argv[1], 1);
 	img2 = cvCreateImage(cvSize(img1->width, img1->height), img1->depth, img1->nChannels);
 
@@ -80,7 +86,8 @@ int main(int argc, char** argv) {
 	//cv_CartoonFilter(img1, img2, 11, 5.0, 5, 30, 5);
 	//cv_JKC_Tile(img1, img2, 1/8.);
 	//cv_JKC_Tile_2(img1, img2, 15, 15);
-	cv_JKC_Tile_3(img1, img2, 15, 15);
+	//cv_JKC_Tile_3(img1, img2, 15, 15);
+	cv_JKC_Tile_4(img1, img2, fp_dbg_out, 15, 15);
 	cvShowImage("Proc", img2);
 
 	printf("Enter any key?\n");
@@ -91,9 +98,12 @@ int main(int argc, char** argv) {
 			return 1;
 	}
 
-	// 
+	// local resource
+	fclose(fp_dbg_out);
 	cvDestroyWindow("Original");
 	cvDestroyWindow("Proc");
+	
+	// global resource
 	cvReleaseImage(&img1);
 	cvReleaseImage(&img2);
 
